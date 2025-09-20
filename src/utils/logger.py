@@ -1,4 +1,26 @@
 import logging
+import sys
+
+
+class ColorFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG': '\033[94m',  # Azul
+        'INFO': '\033[92m',  # Verde
+        'WARNING': '\033[93m',  # Amarelo
+        'ERROR': '\033[91m',  # Vermelho
+        'CRITICAL': '\033[91m',  # Vermelho
+        'RESET': '\033[0m'  # Reset
+    }
+
+    def format(self, record):
+        # Formatar a mensagem normalmente
+        message = super().format(record)
+
+        # Adicionar cor baseada no nível
+        if record.levelname in self.COLORS:
+            message = f"{self.COLORS[record.levelname]}{message}{self.COLORS['RESET']}"
+
+        return message
 
 
 class DebugLogger:
@@ -6,14 +28,26 @@ class DebugLogger:
         self.debug = debug
         self.logger = logging.getLogger('BibleStylePipeline')
 
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+
+        # Configurar formato
+        formatter = ColorFormatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
+
+        # Configurar handler para console
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+
+        # Configurar nível baseado no debug
         if debug:
-            logging.basicConfig(
-                level=logging.DEBUG,
-                format='%(asctime)s - %(levelname)s - %(message)s',
-                datefmt='%H:%M:%S'
-            )
+            self.logger.setLevel(logging.DEBUG)
+            console_handler.setLevel(logging.DEBUG)
         else:
-            logging.basicConfig(level=logging.INFO)
+            self.logger.setLevel(logging.INFO)
+            console_handler.setLevel(logging.INFO)
+
+        # Adicionar handler ao logger
+        self.logger.addHandler(console_handler)
 
     def print(self, message: str, level: str = "info"):
         if self.debug:
@@ -48,7 +82,7 @@ class DebugLogger:
                 print(f"   Fold {i}: accuracy = {fold_metrics['accuracy']:.4f}, f1 = {fold_metrics['f1']:.4f}")
 
 
-global_logger = DebugLogger(True)
+global_logger = DebugLogger(False)
 
 
 def set_global_debug_mode(debug: bool):

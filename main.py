@@ -166,10 +166,30 @@ class BibleStylePipeline:
         model_dir = Path("models/saved")
         model_dir.mkdir(exist_ok=True, parents=True)
 
-        base_name = f"{self.config['dataset']}_{self.config['features']['method']}_{self.config['model']['name']}"
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"{self.config['dataset']}_{self.config['features']['method']}_{self.config['model']['name']}_{timestamp}"
 
         model_path = model_dir / f"{base_name}_model.pkl"
         joblib.dump(self.model, model_path)
+
+        config_path = model_dir / f"{base_name}_config.json"
+        import json
+        with open(config_path, "w", encoding="utf-8") as f:
+            serializable_config = self._make_config_serializable(self.config)
+            json.dump(serializable_config, f, indent=2, ensure_ascii=False)
+
+        results_path = model_dir / f"{base_name}_results.json"
+        with open(results_path, "w", encoding="utf-8") as f:
+            results_data = {
+                'mean_accuracy': float(self.results['mean_accuracy']),
+                'std_accuracy': float(self.results['std_accuracy']),
+                'mean_f1': float(self.results['mean_f1']),
+                'std_f1': float(self.results['std_f1']),
+                'timestamp': timestamp,
+                'dataset': self.config['dataset']
+            }
+            json.dump(results_data, f, indent=2, ensure_ascii=False)
 
         if self.vectorizer is not None:
             vectorizer_path = model_dir / f"{base_name}_vectorizer.pkl"
@@ -178,18 +198,34 @@ class BibleStylePipeline:
                 print_debug(f"Vectorizer salvo: {vectorizer_path}")
 
         if self.best_params:
-            results_path = model_dir / f'{base_name}_grid_search_results.joblib'
-            joblib.dump({
-                'best_params': self.best_params,
-                'best_score': self.model.score if hasattr(self.model, 'score') else None,
-                'config': self.config
-            }, results_path)
-            if self.debug:
-                print_debug(f"   📊 Resultados Grid Search salvos: {results_path}")
+            best_params_path = model_dir / f"{base_name}_best_params.json"
+            with open(best_params_path, "w", encoding="utf-8") as f:
+                json.dump(self.best_params, f, indent=2, ensure_ascii=False)
 
-        print_info(f"Modelo completo salvo em: {model_dir}/")
+        print_info(f" Modelo salvos com timestamp: {timestamp}")
+        print_info(f" Modelo: {model_path}")
+        print_info(f" Configuração: {config_path}")
+        print_info(f" Resultados: {results_path}")
 
         return model_path
+
+    def _make_config_serializable(self, config):
+        import numpy as np
+        from pathlib import Path
+
+        def convert_value(value):
+            if isinstance(value, (np.integer, np.floating)):
+                return float(value)
+            elif isinstance(value, (np.ndarray, list, tuple)):
+                return [convert_value(v) for v in value]  # Chamada recursiva
+            elif isinstance(value, dict):
+                return {k: convert_value(v) for k, v in value.items()}  # Chamada recursiva
+            elif isinstance(value, (Path, set)):
+                return str(value)
+            else:
+                return value
+
+        return convert_value(config)
 
     def run(self):
         print_info(f"Pipeline: {self.config['dataset']} | "
@@ -228,33 +264,34 @@ class BibleStylePipeline:
 
 
 def main():
+    debug_mode = True
+    set_global_debug_mode(debug_mode)
+
     config = {
         'dataset': 'arcaico_moderno',
         'features': {
             'method': 'bag_of_words',
-            'params': {'ngram': (1, 2)}
+            'params': {'ngram': (1, 3)}
         },
         'model': {
             'name': 'logistic_regression',
-            'params': {'max_iter': 1200, 'class_weight': 'balanced', 'random_state': 42}
+            'params': {'max_iter': 1200, 'class_weight': 'balanced', 'random_state': 99}
         },
         'evaluation': {
             'folds': 10,
-            'random_state': 42,
+            'random_state': 99,
             'accuracy_threshold': 0.6,
-            'save_model': False
+            'save_model': True
         },
         'grid_search': {
             'enable': False
         }
     }
 
-    debug_mode = True
-    set_global_debug_mode(debug_mode)
     pipeline = BibleStylePipeline(config, debug=debug_mode)
     results = pipeline.run()
 
-    print_info(f"🎉 Pipeline concluído! Acurácia: {results['mean_accuracy']:.3f}")
+    print_info(f"Pipeline concluído! Acurácia: {results['mean_accuracy']:.3f}")
 
 
 if __name__ == "__main__":
@@ -288,8 +325,9 @@ def template_config():
 
         # --- CONFIGURAÇÕES DO MODELO ---
         'model': {
-            'name': 'logistic_regression',
-            # Possibilidades: 'logistic_regression', 'mlp', 'random_forest', 'svm' TODO verificar modelos após implementacao
+            'name': 'logistic_regression', # Possibilidades: 'logistic_regression', 'mlp', 'random_forest', 'svm'
+            # TODO verificar modelos após implementacao
+
             'params': {
                 # --- PARÂMETROS GERAIS ---
                 'random_state': 42,  # Para reprodutibilidade
