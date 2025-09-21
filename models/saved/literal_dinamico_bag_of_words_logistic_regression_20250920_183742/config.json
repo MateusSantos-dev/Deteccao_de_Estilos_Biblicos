@@ -1,0 +1,31 @@
+{
+  "dataset": "literal_dinamico",
+  "features": {
+    "method": "bag_of_words",
+    "params": {
+      "ngrams": [
+        1,
+        2
+      ],
+      "max_features": 5000
+    }
+  },
+  "model": {
+    "name": "logistic_regression",
+    "params": {
+      "max_iter": 1000,
+      "class_weight": "balanced",
+      "random_state": 42,
+      "solver": "liblinear"
+    }
+  },
+  "evaluation": {
+    "folds": 5,
+    "random_state": 42,
+    "accuracy_threshold": 0.6,
+    "save_model": true
+  },
+  "grid_search": {
+    "enable": false
+  }
+}

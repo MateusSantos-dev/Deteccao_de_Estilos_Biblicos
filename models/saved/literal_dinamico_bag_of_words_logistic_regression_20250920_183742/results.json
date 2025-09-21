@@ -1,0 +1,8 @@
+{
+  "mean_accuracy": 0.825722274141387,
+  "std_accuracy": 0.0034549146017848085,
+  "mean_f1": 0.825709728504832,
+  "std_f1": 0.0034603528032075,
+  "timestamp": "20250920_183742",
+  "dataset": "literal_dinamico"
+}
