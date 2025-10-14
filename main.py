@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import ClassifierMixin
+from sklearn.metrics import accuracy_score
 from scipy.sparse import csr_matrix
 from typing import Any
 
@@ -62,7 +63,13 @@ class BibleStylePipeline:
             x_vectorized, self.vectorizer = create_bag_of_words_vect(texts, **params)
 
         elif method == "tfidf":
-            raise NotImplementedError
+            from src.features.tfidf import create_tfidf_vect
+            x_vectorized, self.vectorizer = create_tfidf_vect(texts, **params)
+
+        elif method == "word2vec":
+            from src.features.embedding import create_word2vec_features
+            x_vectorized = create_word2vec_features(texts, **params)
+            self.vectorizer = None
 
         else:
             raise ValueError(f"Método de features não encontrado: {method}")
@@ -223,6 +230,7 @@ class BibleStylePipeline:
         results_path = model_dir / "results.json"
         with open(results_path, "w", encoding="utf-8") as f:
             results_data = {
+                'test_accuracy': float(self.results.get('test_accuracy', 0.0)),
                 'mean_accuracy': float(self.results['mean_accuracy']),
                 'std_accuracy': float(self.results['std_accuracy']),
                 'mean_f1': float(self.results['mean_f1']),
@@ -293,6 +301,9 @@ class BibleStylePipeline:
         return convert_value(self.config)
 
     def run(self):
+
+        from sklearn.model_selection import train_test_split
+
         print_info(f"Pipeline: {self.config['dataset']} | "
                    f"{self.config['features']['method']} | "
                    f"{self.config['model']['name']}"
@@ -302,26 +313,48 @@ class BibleStylePipeline:
             print_debug(f"Configuração completa: {self.config}")
 
         try:
+            from sklearn.preprocessing import LabelEncoder
             texts, labels = self.load_data()
-            x = self.extract_features(texts)
+
+            label_encoder = LabelEncoder()
+            labels_encoded = label_encoder.fit_transform(labels)
+
+            texts_train, texts_test, y_train, y_test = train_test_split(
+                texts, labels_encoded, test_size=0.2, random_state=42, stratify=labels_encoded
+            )
+            x_train = self.extract_features(texts_train)
+            x_test = self.extract_features(texts_test)
 
             if self.config['grid_search']['enable']:
                 print_info("Executando grid search para parâmetros ótimos...")
-                self.model, self.best_params = self.run_grid_search(x, labels)
+                self.model, self.best_params = self.run_grid_search(x_train, y_train)
 
-            results = self.evaluate(x, labels)
+            else:
+                # Criar modelo com parâmetros padrão quando não há grid search
+                print_info("Grid search desabilitado - usando parâmetros padrão")
+                self.model = self.get_model_instance()
+                self.model.fit(x_train, y_train)
+
+            results = self.evaluate(x_train, y_train)
             self.results = results
 
             print_cross_validation_results(results, f"{self.config['model']['name']} - {self.config['dataset']}")
 
+            if x_test is not None and y_test is not None:
+                test_predictions = self.model.predict(x_test)
+                test_accuracy = accuracy_score(y_test, test_predictions)
+                print_info(f"Acurácia no conjunto de teste: {test_accuracy:.4f}")
+
+                self.results['test_accuracy'] = test_accuracy
+
             if results['mean_accuracy'] >= self.config['evaluation']['accuracy_threshold']:
-                self.train_final_model(x, labels)
+
+                self.train_final_model(x_train, y_train)
 
                 if self.config['evaluation']['save_model']:
                     self.save_model()
             else:
                 print_warning(f"Modelo final não treinado - acurácia abaixo do threshold")
-
             return self.results
 
         except Exception as e:
@@ -336,20 +369,39 @@ def main():
     debug_mode = True
     set_global_debug_mode(debug_mode)
 
-    config = {
-        'dataset': 'arcaico_moderno',
+    datasets = ['arcaico_moderno', 'complexo_simples', 'literal_dinamico']
+    #
+
+    # 🔧 CONFIGURAÇÃO 1: Logistic Regression com TF-IDF (Robusto)
+    config_lr_tfidf = {
+        'dataset': None,
         'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 3)}
+            'method': 'tfidf',
+            'params': {
+                'ngrams': (1, 4),
+                'min_df': 1,
+                'max_df': 0.5,
+                'use_idf': True,
+                'sublinear_tf': True,
+            }
         },
         'model': {
             'name': 'logistic_regression',
-            'params': {'max_iter': 1200, 'class_weight': 'balanced', 'random_state': 99}
+            'params': {
+                'random_state': 42,
+                'max_iter': 3000,
+                'class_weight': 'balanced',
+                'C': 2.0,
+                'fit_intercept': True,
+                'penalty': 'l2',
+                'tol': 0.0001,
+                'n_jobs': -1
+            }
         },
         'evaluation': {
             'folds': 10,
-            'random_state': 99,
-            'accuracy_threshold': 0.6,
+            'random_state': 42,
+            'accuracy_threshold': 0.65,
             'save_model': True
         },
         'grid_search': {
@@ -357,206 +409,17 @@ def main():
         }
     }
 
-    pipeline = BibleStylePipeline(config, debug=debug_mode)
-    results = pipeline.run()
-
-    print_info(f"Pipeline concluído! Acurácia: {results['mean_accuracy']:.3f}")
-
-
-def teste():
-    debug_mode = True
-    set_global_debug_mode(debug_mode)
-
-    # Lista de datasets para testar
-    datasets = ['arcaico_moderno', 'complexo_simples', 'literal_dinamico']
-
-    # 🔧 CONFIGURAÇÃO 1: Logistic Regression (Baseline)
-    config_lr = {
-        'dataset': None,  # Será preenchido para cada dataset
-        'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 2), 'max_features': 5000}
-        },
-        'model': {
-            'name': 'logistic_regression',
-            'params': {
-                'max_iter': 1000,
-                'class_weight': 'balanced',
-                'random_state': 42,
-                'solver': 'liblinear'
-            }
-        },
-        'evaluation': {
-            'folds': 5,
-            'random_state': 42,
-            'accuracy_threshold': 0.6,
-            'save_model': True
-        },
-        'grid_search': {
-            'enable': False  # Sem grid search para baseline
-        }
-    }
-
-    # 🔧 CONFIGURAÇÃO 2: Naive Bayes (Simples + Grid Search)
-    config_nb = {
-        'dataset': None,
-        'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 3), 'max_features': 8000}
-        },
-        'model': {
-            'name': 'naive_bayes',
-            'params': {
-                'alpha': 1.0,
-                'fit_prior': True
-            }
-        },
-        'evaluation': {
-            'folds': 5,
-            'random_state': 42,
-            'accuracy_threshold': 0.55,  # Mais baixo para Naive Bayes
-            'save_model': True
-        },
-        'grid_search': {
-            'enable': True,
-            'scoring': 'f1',
-            'num_folds': 3,
-            'n_jobs': -1,
-            'verbose': 1,
-            'param_grid': {
-                'alpha': [0.1, 0.5, 1.0, 2.0, 5.0],
-                'fit_prior': [True, False]
-            }
-        }
-    }
-
-    # 🔧 CONFIGURAÇÃO 3: Random Forest (Complexo + Grid Search)
-    config_rf = {
-        'dataset': None,
-        'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 2), 'max_features': 10000, 'min_df': 2}
-        },
-        'model': {
-            'name': 'random_forest',
-            'params': {
-                'n_estimators': 100,
-                'max_depth': None,
-                'class_weight': 'balanced',
-                'random_state': 42,
-                'n_jobs': -1
-            }
-        },
-        'evaluation': {
-            'folds': 5,
-            'random_state': 42,
-            'accuracy_threshold': 0.65,
-            'save_model': True
-        },
-        'grid_search': {
-            'enable': True,
-            'scoring': 'accuracy',
-            'num_folds': 3,
-            'n_jobs': -1,
-            'verbose': 1,
-            'param_grid': {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [10, 20, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4]
-            }
-        }
-    }
-
-    # 🔧 CONFIGURAÇÃO 4: MLP (Redes Neurais + Grid Search)
-    config_mlp = {
-        'dataset': None,
-        'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 2), 'max_features': 8000, 'max_df': 0.9}
-        },
-        'model': {
-            'name': 'mlp',
-            'params': {
-                'hidden_layer_sizes': (100,),
-                'activation': 'relu',
-                'solver': 'adam',
-                'max_iter': 1000,
-                'random_state': 42,
-                'early_stopping': True
-            }
-        },
-        'evaluation': {
-            'folds': 5,
-            'random_state': 42,
-            'accuracy_threshold': 0.63,
-            'save_model': True
-        },
-        'grid_search': {
-            'enable': True,
-            'scoring': 'accuracy',
-            'num_folds': 3,
-            'n_jobs': 1,  # MLP não paraleliza bem
-            'verbose': 1,
-            'param_grid': {
-                'hidden_layer_sizes': [(50,), (100,), (50, 30)],
-                'alpha': [0.0001, 0.001, 0.01],
-                'learning_rate_init': [0.001, 0.0005]
-            }
-        }
-    }
-
-    # 🔧 CONFIGURAÇÃO 5: SVM (Kernel Linear + Grid Search)
-    config_svm = {
-        'dataset': None,
-        'features': {
-            'method': 'bag_of_words',
-            'params': {'ngrams': (1, 2), 'max_features': 12000, 'min_df': 3}
-        },
-        'model': {
-            'name': 'svm',
-            'params': {
-                'C': 1.0,
-                'kernel': 'linear',
-                'class_weight': 'balanced',
-                'random_state': 42,
-                'probability': True
-            }
-        },
-        'evaluation': {
-            'folds': 5,
-            'random_state': 42,
-            'accuracy_threshold': 0.67,  # SVM geralmente tem boa acurácia
-            'save_model': True
-        },
-        'grid_search': {
-            'enable': True,
-            'scoring': 'accuracy',
-            'num_folds': 3,
-            'n_jobs': -1,
-            'verbose': 1,
-            'param_grid': {
-                'C': [0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
-                'kernel': ['linear', 'rbf'],
-                'gamma': ['scale', 'auto']
-            }
-        }
-    }
-
-    # 📊 LISTA DE TODAS AS CONFIGURAÇÕES
-    all_configs = [
-        ('Logistic_Regression', config_lr),
-        ('Naive_Bayes', config_nb),
-        ('Random_Forest', config_rf),
-        ('MLP', config_mlp),
-        ('SVM', config_svm)
+    # 📊 LISTA DE CONFIGURAÇÕES
+    configs = [
+        ('LR_TFIDF', config_lr_tfidf)
     ]
 
-    # 🚀 EXECUTAR TODOS OS EXPERIMENTOS
+    # 🚀 EXECUTAR TESTES
     results_summary = {}
 
-    for config_name, config in all_configs:
-        print(f"\n{'🚀' * 3} INICIANDO {config_name.upper()} {'🚀' * 3}")
+    for config_name, config in configs:
+        print(f"\n{'🚀' * 3} INICIANDO {config_name} {'🚀' * 3}")
+        print(f"{'📋' * 2} Método: {config['features']['method']} {'📋' * 2}")
 
         dataset_results = {}
         for dataset in datasets:
@@ -570,13 +433,21 @@ def teste():
                 pipeline = BibleStylePipeline(current_config, debug=debug_mode)
                 results = pipeline.run()
 
+                # Coletar resultados
+                test_accuracy = results.get('test_accuracy', results['mean_accuracy'])
                 dataset_results[dataset] = {
+                    'test_accuracy': test_accuracy,
                     'mean_accuracy': results['mean_accuracy'],
                     'mean_f1': results['mean_f1'],
-                    'best_params': getattr(pipeline, 'best_params', None)
+                    'best_params': getattr(pipeline, 'best_params', None),
+                    'feature_method': config['features']['method']
                 }
 
-                print_info(f"✅ {config_name} - {dataset}: {results['mean_accuracy']:.3f}")
+                print_info(f"✅ {config_name} - {dataset}: Test Accuracy={test_accuracy:.3f}")
+
+                # Mostrar melhores parâmetros se grid search foi executado
+                if hasattr(pipeline, 'best_params') and pipeline.best_params:
+                    print_info(f"🎯 Melhores parâmetros: {pipeline.best_params}")
 
             except Exception as e:
                 print_error(f"❌ Erro em {config_name} - {dataset}: {e}")
@@ -584,21 +455,67 @@ def teste():
 
         results_summary[config_name] = dataset_results
 
-    # 📈 IMPRIMIR RELATÓRIO FINAL
-    print(f"\n{'🎯' * 5} RELATÓRIO FINAL {'🎯' * 5}")
-    print("=" * 80)
+    # 📈 RELATÓRIO FINAL DETALHADO
+    print(f"\n{'🎯' * 5} RELATÓRIO FINAL - REGRESSÃO LOGÍSTICA {'🎯' * 5}")
+    print("=" * 90)
+
+    # Ordenar por melhor performance média
+    config_performance = []
+    for config_name, dataset_results in results_summary.items():
+        valid_results = [r for r in dataset_results.values() if 'error' not in r]
+        if valid_results:
+            avg_test_accuracy = np.mean([r['test_accuracy'] for r in valid_results])
+            config_performance.append((config_name, avg_test_accuracy))
+
+    # Ordenar do melhor para o pior
+    config_performance.sort(key=lambda x: x[1], reverse=True)
+
+    print(f"\n🏆 RANKING POR PERFORMANCE MÉDIA:")
+    for i, (config_name, avg_accuracy) in enumerate(config_performance, 1):
+        print(f"   {i}º - {config_name}: {avg_accuracy:.3f}")
+
+    print(f"\n{'📊' * 3} DETALHES POR CONFIGURAÇÃO {'📊' * 3}")
 
     for config_name, dataset_results in results_summary.items():
         print(f"\n📊 {config_name.upper()}:")
+        print(
+            f"   Método: {next(iter([r for r in dataset_results.values() if 'error' not in r]), {}).get('feature_method', 'N/A')}")
+
         for dataset, results in dataset_results.items():
             if 'error' in results:
                 print(f"   {dataset}: ❌ {results['error']}")
             else:
-                print(f"   {dataset}: ✅ Accuracy={results['mean_accuracy']:.3f}, F1={results['mean_f1']:.3f}")
+                test_acc = results['test_accuracy']
+                cv_acc = results['mean_accuracy']
+                grid_info = " (GridSearch)" if results['best_params'] else ""
 
+                # Destacar a melhor acurácia
+                accuracy_diff = test_acc - cv_acc
+                diff_symbol = "📈" if accuracy_diff > 0 else ("📉" if accuracy_diff < 0 else "➡️")
 
-if __name__ == "__main__":
-    teste()
+                print(f"   {dataset}: ✅ Test={test_acc:.3f}, CV={cv_acc:.3f} {diff_symbol} {grid_info}")
+
+    # 📋 RESUMO ESTATÍSTICO
+    print(f"\n{'📈' * 3} ESTATÍSTICAS GERAIS {'📈' * 3}")
+
+    feature_methods = {}
+    for config_name, dataset_results in results_summary.items():
+        valid_results = [r for r in dataset_results.values() if 'error' not in r]
+        if valid_results:
+            feature_method = valid_results[0]['feature_method']
+            test_accuracies = [r['test_accuracy'] for r in valid_results]
+
+            if feature_method not in feature_methods:
+                feature_methods[feature_method] = []
+            feature_methods[feature_method].extend(test_accuracies)
+
+    print("   Performance média por método de features:")
+    for method, accuracies in feature_methods.items():
+        avg_acc = np.mean(accuracies)
+        std_acc = np.std(accuracies)
+        print(f"   {method.upper()}: {avg_acc:.3f} ± {std_acc:.3f}")
+
+    return results_summary
 
 
 def template_config():
@@ -611,7 +528,7 @@ def template_config():
 
         # --- CONFIGURAÇÕES DE FEATURES ---
         'features': {
-            'method': 'bag_of_words',  # Possibilidades: 'bag_of_words', 'tfidf'
+            'method': 'bag_of_words',  # Possibilidades: 'bag_of_words', 'tfidf', 'word2vec'
             'params': {
                 # Parâmetros comuns para ambos os métodos:
                 'ngrams': (1, 1),  # Possibilidades: (1,1), (1,2), (1,3), (2,2), (2,3)
@@ -628,8 +545,8 @@ def template_config():
 
         # --- CONFIGURAÇÕES DO MODELO ---
         'model': {
-            'name': 'logistic_regression',  # Possibilidades: 'logistic_regression', 'mlp', 'random_forest', 'svm'
-            # TODO verificar modelos após implementacao
+            'name': 'logistic_regression',  # Possibilidades: 'logistic_regression', 'naive_bayes', 'mlp',
+            # 'random_forest', 'svm'
 
             'params': {
                 # --- PARÂMETROS GERAIS ---
@@ -680,3 +597,7 @@ def template_config():
             }
         }
     }
+
+
+if __name__ == "__main__":
+    main()
